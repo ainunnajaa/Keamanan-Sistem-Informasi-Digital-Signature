@@ -3,7 +3,8 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use SimpleSoftwareIO\QrCode\Facades\QrCode;
+use Endroid\QrCode\QrCode;
+use Endroid\QrCode\Writer\PngWriter;
 use setasign\Fpdi\Fpdi;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Storage;
@@ -47,31 +48,46 @@ class SignatureController extends Controller
         $encrypted = Crypt::encryptString(json_encode($qrData));
 
         // ============================
-        // Generate QR Code
+        // Generate QR Code (JPEG)
         // ============================
-        // ==============================================
-// Generate QR Code
-// ==============================================
-$qrFileName = 'qr_' . time() . '.png';
-$qrImage = QrCode::format('png')->size(200)->generate($encrypted);
-
-// Pastikan foldernya ada
-if (!file_exists(storage_path('app/public/qr'))) {
-    mkdir(storage_path('app/public/qr'), 0777, true);
-}
-
-// Simpan QR ke storage/app/public/qr
-file_put_contents(storage_path('app/public/qr/' . $qrFileName), $qrImage);
-
-// Copy ke public/storage/qr
-if (!file_exists(public_path('storage/qr'))) {
-    mkdir(public_path('storage/qr'), 0777, true);
-}
-
-copy(
-    storage_path('app/public/qr/' . $qrFileName),
-    public_path('storage/qr/' . $qrFileName)
-);
+        $qrFileName = 'qr_' . time() . '.jpg';
+        
+        $qrCode = QrCode::create($encrypted)
+            ->setSize(200)
+            ->setMargin(10);
+        
+        $writer = new PngWriter();
+        $result = $writer->write($qrCode);
+        
+        // Convert PNG to JPEG using GD
+        $string = $result->getString();
+        $image = imagecreatefromstring($string);
+        
+        // Create white background (QR might have transparency)
+        $bg = imagecreatetruecolor(imagesx($image), imagesy($image));
+        $white = imagecolorallocate($bg, 255, 255, 255);
+        imagefill($bg, 0, 0, $white);
+        imagecopy($bg, $image, 0, 0, 0, 0, imagesx($image), imagesy($image));
+        
+        // Pastikan foldernya ada
+        if (!file_exists(storage_path('app/public/qr'))) {
+            mkdir(storage_path('app/public/qr'), 0777, true);
+        }
+        
+        // Simpan QR sebagai JPEG
+        imagejpeg($bg, storage_path('app/public/qr/' . $qrFileName), 100);
+        imagedestroy($image);
+        imagedestroy($bg);
+        
+        // Copy ke public/storage/qr
+        if (!file_exists(public_path('storage/qr'))) {
+            mkdir(public_path('storage/qr'), 0777, true);
+        }
+        
+        copy(
+            storage_path('app/public/qr/' . $qrFileName),
+            public_path('storage/qr/' . $qrFileName)
+        );
 
 
         // ============================
@@ -108,6 +124,15 @@ copy(
         $signedName = 'signed_' . time() . '.pdf';
         $signedPath = 'public/signed/' . $signedName;
         $pdf->Output(storage_path('app/' . $signedPath), 'F');
+        
+        // Copy to public/storage/signed for direct access
+        if (!file_exists(public_path('storage/signed'))) {
+            mkdir(public_path('storage/signed'), 0777, true);
+        }
+        copy(
+            storage_path('app/' . $signedPath),
+            public_path('storage/signed/' . $signedName)
+        );
 
         // ============================
         // Simpan metadata ke database
@@ -129,5 +154,16 @@ copy(
     {
         $signatures = Signature::all();
         return view('signature.history', compact('signatures'));
+    }
+
+    public function download($filename)
+    {
+        $path = storage_path('app/public/signed/' . $filename);
+        
+        if (!file_exists($path)) {
+            abort(404);
+        }
+        
+        return response()->download($path);
     }
 }

@@ -6,7 +6,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Smalot\PdfParser\Parser;
 use Zxing\QrReader;
-use Imagick;
 
 class VerifyController extends Controller
 {
@@ -27,51 +26,50 @@ class VerifyController extends Controller
         $file->move(storage_path("app/temp"), $fileName);
         $path = storage_path("app/temp/" . $fileName);
 
-        // Hitung total halaman
+        // Ekstrak teks dari PDF menggunakan PdfParser
         $parser = new Parser();
         $pdf = $parser->parseFile($path);
-        $pages = $pdf->getPages();
-        $totalPages = count($pages);
-
-        ini_set('memory_limit', '1G'); // agar tidak error memory
-
+        
         $qrText = null;
 
-        // Scan mulai dari halaman terakhir
-        for ($pageNum = $totalPages - 1; $pageNum >= 0; $pageNum--) {
-
-            $imagick = new Imagick();
-            $imagick->setResolution(200, 200);
-            $imagick->readImage($path . "[" . $pageNum . "]");
-            $imagick->setImageBackgroundColor('white');
-            $imagick->setImageFormat('png');
-
-            // Resize untuk memperbesar QR agar terbaca
-            $imagick->resizeImage(2000, 0, Imagick::FILTER_LANCZOS, 1);
-
-            $pageImage = storage_path("app/temp/preview_page_" . $pageNum . ".png");
-            $imagick->writeImage($pageImage);
-
-            try {
-                $qrReader = new QrReader($pageImage);
-                $qrText = $qrReader->text();
-
-                \Log::info("QR: " . $qrText);
-
-                if ($qrText) {
-                    break;
+        // Coba ekstrak gambar dari PDF
+        $pages = $pdf->getPages();
+        foreach ($pages as $page) {
+            $xObjects = $page->getXObjects();
+            
+            foreach ($xObjects as $xObject) {
+                if ($xObject instanceof \Smalot\PdfParser\XObject\Image) {
+                    // Simpan gambar sementara
+                    // Gunakan ekstensi .jpg karena kita sekarang embed JPEG
+                    $tempImage = storage_path('app/temp/qr_' . uniqid() . '.jpg');
+                    
+                    // Ambil raw content gambar
+                    $content = $xObject->getContent();
+                    
+                    // Simpan content ke file
+                    file_put_contents($tempImage, $content);
+                    
+                    try {
+                        // Coba baca QR dari gambar ini
+                        $qrReader = new QrReader($tempImage);
+                        $decodedText = $qrReader->text();
+                        
+                        if ($decodedText && preg_match('/eyJpdiI6[A-Za-z0-9+\/=]+/', $decodedText)) {
+                            $qrText = $decodedText;
+                            if (file_exists($tempImage)) unlink($tempImage);
+                            break 2; // Ketemu, keluar dari loop
+                        }
+                    } catch (\Exception $e) {
+                        // Ignore error baca QR
+                    }
+                    
+                    if (file_exists($tempImage)) unlink($tempImage);
                 }
-
-            } catch (\Exception $e) {
-                \Log::warning("QR scan failed on page " . ($pageNum + 1));
             }
-
-            $imagick->clear();
-            $imagick->destroy();
         }
 
         if (!$qrText) {
-            return back()->with('error', 'QR Code tidak ditemukan pada seluruh dokumen');
+            return back()->with('error', 'QR Code atau data verifikasi tidak ditemukan dalam dokumen');
         }
 
         try {
